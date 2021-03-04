@@ -79,6 +79,8 @@ class GSM_MQTT{
     void disconnect(void);
     void processing(void);
     bool available(void);
+    void next(void);
+    void SmsSend(unsigned long sms);
     
 
     void AutoConnect(void);
