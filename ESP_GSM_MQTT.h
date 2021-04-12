@@ -79,10 +79,13 @@ class GSM_MQTT{
     void disconnect(void);
     void processing(void);
     bool available(void);
+    void receivecall(void);
+    void endcall(void);
     void next(void);
-    void SmsSend(unsigned long sms);
-    
+    void SmsSend(String sms);
 
+
+    void OnSmsArrived(String str);
     void AutoConnect(void);
     void OnConnect(void);
     void OnMessage(char *Topic, int TopicLength, char *Message, int MessageLength);

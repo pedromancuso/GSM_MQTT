@@ -1,4 +1,7 @@
-#include "GSM_MQTT.h"
+#define SIMSerial Serial
+#define DEBUGSerial Serial
+#include "ESP_GSM_MQTT.h"
+void Monitor(String str){/*DEBUGSerial.println("");DEBUGSerial.print(str);*/}
 #include "Arduino.h"
 #include <avr/pgmspace.h>
 char RcvdMsg[200] = "";int RcvdConf = 0;int count = 0;int RcvdEnd = 0;char MsgMob[15];char MsgTxt[50];int MsgLength = 0;
@@ -23,9 +26,7 @@ const char ConnectAck3[] PROGMEM={"Connection Refused: server unavailable\r\n"};
 const char ConnectAck4[] PROGMEM={"Connection Refused: bad user name or password\r\n"};
 const char ConnectAck5[] PROGMEM={"Connection Refused: not authorized\r\n"};
 extern uint8_t GSM_Response;uint8_t GSM_Response = 0;unsigned long previousMillis = 0;boolean stringComplete = false;
-extern String MQTT_HOST;extern String MQTT_PORT;extern GSM_MQTT MQTT;extern String APN;
-#define SIMSerial Serial3
-#define DEBUGSerial Serial
+extern String mqttbroker;extern int mqttport;extern GSM_MQTT MQTT;extern String APN;int HangUp=0;
 void serialEvent();
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////GSM_MQTT
 GSM_MQTT::GSM_MQTT(unsigned long KeepAlive){_KeepAliveTimeOut = KeepAlive;}
@@ -33,11 +34,11 @@ GSM_MQTT::GSM_MQTT(unsigned long KeepAlive){_KeepAliveTimeOut = KeepAlive;}
 void GSM_MQTT::begin(void){SIMSerial.write("AT\r\n");delay(1000);_tcpInit();}
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////SENDAT
 char GSM_MQTT::_sendAT(char *command, unsigned long waitms){
-  unsigned long PrevMillis = millis();//  Serial.println(PrevMillis);
+  unsigned long PrevMillis = millis();
   strcpy(reply, "none");
   GSM_Response = 0;
   SIMSerial.write(command);
-  unsigned long currentMillis=millis();//  Serial.println(currentMillis);  
+  unsigned long currentMillis=millis();
   while((GSM_Response==0)&&((currentMillis-PrevMillis)<waitms)){serialEvent();currentMillis=millis();}
   return GSM_Response;
 }
@@ -56,10 +57,12 @@ void GSM_MQTT::_tcpInit(void){
   switch(modemStatus){
     case 0:{delay(1000);SIMSerial.print("+++");delay(500);
          if(_sendAT("AT\r\n",5000)==1){_sendAT("AT+CMGF=1\n",2000);_sendAT("AT+CNMI=1,2,0,0,0\n",2000);modemStatus=1;}else{modemStatus=0;break;}}
-    case 1:{if(_sendAT("ATE1\r\n",2000)==1){modemStatus=2;}else{modemStatus=1;break;}}
+    case 1:{if(_sendAT("ATE0\r\n",2000)==1){modemStatus=2;}else{modemStatus=1;break;}}
     case 2:{
       if(sendATreply("AT+CREG?\r\n","0,1",5000)==1){
+        delay(1000);
         _sendAT("AT+CIPMUX=0\r\n",2000);
+        delay(1000);
         _sendAT("AT+CIPMODE=1\r\n",2000);
         if (sendATreply("AT+CGATT?\r\n", ": 1", 4000)!= 1){_sendAT("AT+CGATT=1\r\n", 2000);}
         modemStatus = 3;_tcpStatus = 2;
@@ -71,12 +74,12 @@ void GSM_MQTT::_tcpInit(void){
         else{_tcpStatusPrev = _tcpStatus;tcpATerrorcount = 0;}
       }
       _tcpStatusPrev = _tcpStatus;
-      DEBUGSerial.print(_tcpStatus);
+      Monitor(String(_tcpStatus));
       switch (_tcpStatus){
         case 2:{String str="AT+CSTT=\""+APN+"\"\r\n";char temp[50];str.toCharArray(temp,50);_sendAT(temp, 5000);break;}
         case 3:{_sendAT("AT+CIICR\r\n", 5000);break;}
         case 4:{sendATreply("AT+CIFSR\r\n", ".", 4000);break;}
-        case 5:{SIMSerial.print("AT+CIPSTART=\"TCP\",\"");SIMSerial.print(MQTT_HOST);SIMSerial.print("\",\"");SIMSerial.print(MQTT_PORT);
+        case 5:{SIMSerial.print("AT+CIPSTART=\"TCP\",\"");SIMSerial.print(mqttbroker);SIMSerial.print("\",\"");SIMSerial.print(String(mqttport));
           if(_sendAT("\"\r\n", 5000)==1){unsigned long PrevMillis = millis();unsigned long currentMillis = millis();
             while((GSM_Response!=4)&&((currentMillis-PrevMillis)<20000)){serialEvent();currentMillis = millis();}}break;}
         case 6:{unsigned long PrevMillis = millis();unsigned long currentMillis = millis();
@@ -120,7 +123,7 @@ void GSM_MQTT::publish(char DUP,char Qos,char RETAIN,unsigned int MessageID,char
   localLength+=strlen(Message);_sendLength(localLength);_sendUTFString(Topic);
   if(Qos>0){SIMSerial.print(char(MessageID/256));SIMSerial.print(char(MessageID%256));}
   SIMSerial.print(Message);
-  DEBUGSerial.println("Publish: "+String(Topic)+"/"+String(Message));
+  Monitor("Publish: "+String(Topic)+"/"+String(Message));
 }
 void GSM_MQTT::publishACK(unsigned int MessageID){SIMSerial.print(char(PUBACK*16));
   _sendLength(2);SIMSerial.print(char(MessageID/256));SIMSerial.print(char(MessageID%256));}
@@ -134,13 +137,13 @@ void GSM_MQTT::publishCOMP(unsigned int MessageID){SIMSerial.print(char(PUBCOMP*
 void GSM_MQTT::subscribe(char DUP,unsigned int MessageID,char *SubTopic,char SubQoS){
   SIMSerial.print(char(SUBSCRIBE * 16 + DUP * DUP_Mask + 1 * QoS_Scale));int localLength = 2 + (2 + strlen(SubTopic)) + 1;
   _sendLength(localLength);SIMSerial.print(char(MessageID / 256));SIMSerial.print(char(MessageID % 256));_sendUTFString(SubTopic);
-  SIMSerial.print(SubQoS);Serial.println("Subscribe: "+String(SubTopic));}
+  SIMSerial.print(SubQoS);/*Serial.println("Subscribe: "+String(SubTopic));*/}
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////UNSUBSCRIBE
 void GSM_MQTT::unsubscribe(char DUP, unsigned int MessageID,char *SubTopic){
   SIMSerial.print(char(UNSUBSCRIBE*16+DUP*DUP_Mask+1*QoS_Scale));int localLength = (2 + strlen(SubTopic)) + 2;
   _sendLength(localLength);SIMSerial.print(char(MessageID / 256));SIMSerial.print(char(MessageID % 256));_sendUTFString(SubTopic);}
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////DISCONNECT
-void GSM_MQTT::disconnect(void){SIMSerial.print(char(DISCONNECT*16));_sendLength(0);pingFlag=false;Serial.println("MQTT.pingFlag=false (ln119)");}
+void GSM_MQTT::disconnect(void){SIMSerial.print(char(DISCONNECT*16));_sendLength(0);pingFlag=false;/*Serial.println("MQTT.pingFlag=false (ln119)");*/}
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////PRINTMESSAGETYPE
 void GSM_MQTT::printMessageType(uint8_t Message){
   switch (Message){
@@ -187,7 +190,6 @@ void GSM_MQTT::printConnectAck(uint8_t Ack){
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////_GENERATEMESSAGEID
 unsigned int GSM_MQTT::_generateMessageID(void){if(_LastMessaseID<65535){return ++_LastMessaseID;}else{_LastMessaseID=0;return _LastMessaseID;}}
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////PROCESSING
-unsigned long smstimer=0;
 void GSM_MQTT::processing(void){
   if(TCP_Flag==true){serialEvent();}//new code
   else if(TCP_Flag==false){MQTT_Flag=false;_tcpInit();/*Serial.println("MQTT_Flag=false (ln 192)");*/}
@@ -197,6 +199,7 @@ void GSM_MQTT::processing(void){
 bool GSM_MQTT::available(void){return MQTT_Flag;}
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////RECSMS
 char inchar4;char inchar3;char inchar2;char inchar1;int times=0;
+extern char RESULTADO[500];
 void RecSMS(char data){
   if(times==3){inchar4=data;times++;}
   if(times==2){inchar3=data;times++;}
@@ -204,106 +207,119 @@ void RecSMS(char data){
   if(times==0){inchar1=data;times++;}
   if(times>=4){
     inchar1=inchar2;inchar2=inchar3;inchar3=inchar4;inchar4=data;
-    if((inchar1== '+') && (inchar2== 'C')&&(inchar3== 'M')&&(inchar4== 'T')){RcvdConf = 1;}
-    if(RcvdConf == 1){
-      if(data == '\n'){RcvdEnd++;}
-      if(RcvdEnd == 3){RcvdEnd = 0;}
-      RcvdMsg[count] = data;
-      count++;
-      if(RcvdEnd == 2){RcvdConf = 0;MsgLength = count-2;count= 0;}
-      if(RcvdConf == 0){
-        DEBUGSerial.print("Mobile Number is: ");
-        for(int x = 4;x < 18;x++){MsgMob[x-4] = RcvdMsg[x];DEBUGSerial.print(MsgMob[x-4]);}
-        DEBUGSerial.println();
-        DEBUGSerial.print("Message Text: ");
-        for(int x = 47; x < MsgLength; x++){MsgTxt[x-47] = RcvdMsg[x];DEBUGSerial.print(MsgTxt[x-47]);}
-        DEBUGSerial.println();
-        char RcvdMsg[200] = "";int RcvdConf = 0;int count = 0;int RcvdEnd = 0;char MsgMob[15];char MsgTxt[50];int MsgLength = 0;
-      }
+    if((inchar1=='+')&&(inchar2=='C')&&(inchar3=='M')&&(inchar4=='T')){RcvdConf=1;}
+    if(RcvdConf==1){
+      MQTT.OnSmsArrived(String(data)+String(SIMSerial.readStringUntil('\n')));
+    //   if(data == '\n'){RcvdEnd++;}
+    //   if(RcvdEnd == 3){RcvdEnd = 0;}
+    //   RcvdMsg[count] = data;
+    //   count++;
+    //   if(RcvdEnd == 2){RcvdConf = 0;MsgLength = count-2;count= 0;}
+    //   if(RcvdConf == 0){
+    //     Monitor("Mobile Number is: ");
+    //     for(int x = 4;x < 18;x++){MsgMob[x-4] = RcvdMsg[x];Monitor(String(MsgMob[x-4]));}
+    //     Monitor("Message Text: ");
+    //     for(int x = 47; x < MsgLength; x++){MsgTxt[x-47] = RcvdMsg[x];Monitor(String(MsgTxt[x-47]));}
+    //     char RcvdMsg[200] = "";int RcvdConf = 0;int count = 0;int RcvdEnd = 0;char MsgMob[15];char MsgTxt[50];int MsgLength = 0;
+    //   }
     }
   }
 }
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////ATENDER
+void GSM_MQTT::receivecall(){
+  HangUp=1;
+  if(MQTT.TCP_Flag==true){disconnect();}
+  delay(1000);
+  SIMSerial.write("AT+CGATT=0\n");
+  delay(1000);
+  //SIMSerial.write("AT+CIPSHUT\n");
+  modemStatus=0;
+  SIMSerial.write("ATA\n");SIMSerial.write(26);Monitor("Llamada Entrante");
+}
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////COLGAR
+void GSM_MQTT::endcall(){if(HangUp==1){HangUp=0;SIMSerial.write("ATH\n");SIMSerial.write(26);Monitor("Llamada Finalizada");}}
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////SERIALEVENT
 void serialEvent(){
-  while(SIMSerial.available()){
-    char inChar=(char)SIMSerial.read();
-    RecSMS(inChar);//<////////////////////////sms reading
-    if(MQTT.TCP_Flag==false){
-      if(MQTT.index<200){MQTT.inputString[MQTT.index++]=inChar;}
-      if(inChar=='\n'){
-        MQTT.inputString[MQTT.index]=0;stringComplete=true;DEBUGSerial.print(MQTT.inputString);
-        if(strstr(MQTT.inputString,MQTT.reply)!=NULL){
-          MQTT.GSM_ReplyFlag=1;
-          if(strstr(MQTT.inputString," INITIAL")!=0){MQTT.GSM_ReplyFlag=2;}
-          else if(strstr(MQTT.inputString," START")!=0){MQTT.GSM_ReplyFlag=3;}
-          else if(strstr(MQTT.inputString," IP CONFIG")!=0){_delay_us(10);MQTT.GSM_ReplyFlag=4;}
-          else if(strstr(MQTT.inputString," GPRSACT")!=0){MQTT.GSM_ReplyFlag=4;}
-          else if((strstr(MQTT.inputString," STATUS")!=0)||(strstr(MQTT.inputString,"TCP CLOSED")!=0)){MQTT.GSM_ReplyFlag=5;}
-          else if(strstr(MQTT.inputString," TCP CONNECTING")!=0){MQTT.GSM_ReplyFlag=6;}
-          else if((strstr(MQTT.inputString," CONNECT OK")!=0)||(strstr(MQTT.inputString,"CONNECT FAIL")!=NULL)||(strstr(MQTT.inputString,"PDP DEACT")!=0)){MQTT.GSM_ReplyFlag=7;}}
-        else if(strstr(MQTT.inputString,"OK")!=NULL){GSM_Response=1;}
-        else if(strstr(MQTT.inputString,"ERROR")!=NULL){GSM_Response=2;}
-        else if(strstr(MQTT.inputString,".")!= NULL){GSM_Response=3;}
-        else if(strstr(MQTT.inputString,"CONNECT FAIL")!=NULL){GSM_Response=5;}
-        else if(strstr(MQTT.inputString,"CONNECT")!=NULL){GSM_Response=4;MQTT.TCP_Flag=true;MQTT.AutoConnect();MQTT.pingFlag=true;MQTT.tcpATerrorcount=0;DEBUGSerial.println("MQTT.TCP_Flag=True");}
-        else if(strstr(MQTT.inputString,"CLOSED")!=NULL){GSM_Response=4;MQTT.TCP_Flag=false;MQTT.MQTT_Flag=false;DEBUGSerial.println("TCP_Flag=False");}
-        MQTT.index=0;MQTT.inputString[0]=0;
-      }
-    }else{
-      uint8_t ReceivedMessageType=(inChar/16) & 0x0F;uint8_t DUP=(inChar & DUP_Mask)/DUP_Mask;
-      uint8_t QoS=(inChar & QoS_Mask)/QoS_Scale;uint8_t RETAIN=(inChar & RETAIN_Mask);
-      if((ReceivedMessageType>=CONNECT)&&(ReceivedMessageType<=DISCONNECT)){
-        bool NextLengthByte=true;MQTT.length=0;MQTT.lengthLocal=0;uint32_t multiplier=1;delay(2);char Cchar=inChar;
-        while((NextLengthByte==true)&&(MQTT.TCP_Flag==true)){
-          if(SIMSerial.available()){
-            inChar=(char)SIMSerial.read();/*Serial.println(inChar, DEC);*/
-            if(((((Cchar & 0xFF)=='C')&&((inChar & 0xFF)=='L'))||(((Cchar & 0xFF)=='+')&&((inChar & 0xFF)=='P')))&&(MQTT.length==0)){
-              MQTT.index=0;MQTT.inputString[MQTT.index++]=Cchar;MQTT.inputString[MQTT.index++]=inChar;
-              MQTT.TCP_Flag=false;MQTT.MQTT_Flag=false;MQTT.pingFlag=false;DEBUGSerial.println("Disconnecting");
-              DEBUGSerial.println("MQTT.TCP_Flag=False (ln223)");
-            }else{
-              if((inChar&128)==128){MQTT.length+=(inChar&127)*multiplier;multiplier*=128;DEBUGSerial.println("More");}
-              else{NextLengthByte=false;MQTT.length+=(inChar&127)*multiplier;multiplier*=128;}
+    while(SIMSerial.available()){
+      char inChar=(char)SIMSerial.read();
+      RecSMS(inChar);//<////////////////////////sms reading
+      if(MQTT.TCP_Flag==false){
+        if(MQTT.index<200){MQTT.inputString[MQTT.index++]=inChar;}
+        if(inChar=='\n'){
+          MQTT.inputString[MQTT.index]=0;stringComplete=true;Monitor(MQTT.inputString);
+          if(strstr(MQTT.inputString,MQTT.reply)!=NULL){
+            MQTT.GSM_ReplyFlag=1;
+            if(strstr(MQTT.inputString," INITIAL")!=0){MQTT.GSM_ReplyFlag=2;}
+            else if(strstr(MQTT.inputString," START")!=0){MQTT.GSM_ReplyFlag=3;}
+            else if(strstr(MQTT.inputString," IP CONFIG")!=0){delay(10);MQTT.GSM_ReplyFlag=4;}
+            else if(strstr(MQTT.inputString," GPRSACT")!=0){MQTT.GSM_ReplyFlag=4;}
+            else if((strstr(MQTT.inputString," STATUS")!=0)||(strstr(MQTT.inputString,"TCP CLOSED")!=0)){MQTT.GSM_ReplyFlag=5;}
+            else if(strstr(MQTT.inputString," TCP CONNECTING")!=0){MQTT.GSM_ReplyFlag=6;}
+            else if((strstr(MQTT.inputString," CONNECT OK")!=0)||(strstr(MQTT.inputString,"CONNECT FAIL")!=NULL)||(strstr(MQTT.inputString,"PDP DEACT")!=0)){MQTT.GSM_ReplyFlag=7;}}
+          else if(strstr(MQTT.inputString,"OK")!=NULL){GSM_Response=1;}
+          else if(strstr(MQTT.inputString,"ERROR")!=NULL){GSM_Response=2;}
+          else if(strstr(MQTT.inputString,".")!= NULL){GSM_Response=3;}
+          else if(strstr(MQTT.inputString,"CONNECT FAIL")!=NULL){GSM_Response=5;}
+          else if(strstr(MQTT.inputString,"CONNECT")!=NULL){GSM_Response=4;MQTT.TCP_Flag=true;MQTT.AutoConnect();MQTT.pingFlag=true;MQTT.tcpATerrorcount=0;Monitor("MQTT.TCP_Flag=True");}
+          else if(strstr(MQTT.inputString,"CLOSED")!=NULL){GSM_Response=4;MQTT.TCP_Flag=false;MQTT.MQTT_Flag=false;Monitor("TCP_Flag=False");}
+          MQTT.index=0;MQTT.inputString[0]=0;
+        }
+      }else{
+        uint8_t ReceivedMessageType=(inChar/16) & 0x0F;uint8_t DUP=(inChar & DUP_Mask)/DUP_Mask;
+        uint8_t QoS=(inChar & QoS_Mask)/QoS_Scale;uint8_t RETAIN=(inChar & RETAIN_Mask);
+        if((ReceivedMessageType>=CONNECT)&&(ReceivedMessageType<=DISCONNECT)){
+          bool NextLengthByte=true;MQTT.length=0;MQTT.lengthLocal=0;uint32_t multiplier=1;delay(2);char Cchar=inChar;
+          while((NextLengthByte==true)&&(MQTT.TCP_Flag==true)){
+            if(SIMSerial.available()){
+              inChar=(char)SIMSerial.read();/*Serial.println(inChar, DEC);*/
+              if(((((Cchar & 0xFF)=='C')&&((inChar & 0xFF)=='L'))||(((Cchar & 0xFF)=='+')&&((inChar & 0xFF)=='P')))&&(MQTT.length==0)){
+                MQTT.index=0;MQTT.inputString[MQTT.index++]=Cchar;MQTT.inputString[MQTT.index++]=inChar;
+                MQTT.TCP_Flag=false;MQTT.MQTT_Flag=false;MQTT.pingFlag=false;Monitor("Disconnecting");
+                Monitor("MQTT.TCP_Flag=False (ln223)");
+              }else{
+                if((inChar&128)==128){MQTT.length+=(inChar&127)*multiplier;multiplier*=128;Monitor("More");}
+                else{NextLengthByte=false;MQTT.length+=(inChar&127)*multiplier;multiplier*=128;}
+              }
             }
           }
-        }
-        MQTT.lengthLocal=MQTT.length;/*Serial.println(MQTT.length);*/ 
-        if(MQTT.TCP_Flag==true){
-          MQTT.printMessageType(ReceivedMessageType);MQTT.index=0L;uint32_t a=0;
-          while((MQTT.length-- > 0)&&(SIMSerial.available())){MQTT.inputString[uint32_t(MQTT.index++)]=(char)SIMSerial.read();delay(1);}
-          /*Serial.println(" ");*/  
-          if (ReceivedMessageType==CONNACK){
-            MQTT.ConnectionAcknowledgement=MQTT.inputString[0]*256+MQTT.inputString[1];
-            if(MQTT.ConnectionAcknowledgement==0){MQTT.MQTT_Flag=true;MQTT.OnConnect();}
-            MQTT.printConnectAck(MQTT.ConnectionAcknowledgement); /*MQTT.OnConnect();*/
-          }else if(ReceivedMessageType==PUBLISH){
-            uint32_t TopicLength=(MQTT.inputString[0])*256+(MQTT.inputString[1]);DEBUGSerial.print("Topic: '");MQTT.PublishIndex = 0;
-            for(uint32_t iter=2;iter<TopicLength+2;iter++){DEBUGSerial.print(MQTT.inputString[iter]);MQTT.Topic[MQTT.PublishIndex++]=MQTT.inputString[iter];}
-            MQTT.Topic[MQTT.PublishIndex]=0;DEBUGSerial.print("' Message: '");
-            MQTT.TopicLength=MQTT.PublishIndex;MQTT.PublishIndex=0;uint32_t MessageSTART=TopicLength+2UL;int MessageID=0;
-            if(QoS!=0){MessageSTART+=2;MessageID=MQTT.inputString[TopicLength+2UL]*256+MQTT.inputString[TopicLength+3UL];}
-            for(uint32_t iter=(MessageSTART);iter<(MQTT.lengthLocal);iter++){DEBUGSerial.print(MQTT.inputString[iter]);MQTT.Message[MQTT.PublishIndex++]=MQTT.inputString[iter];}
-            MQTT.Message[MQTT.PublishIndex]=0;DEBUGSerial.println("'");MQTT.MessageLength=MQTT.PublishIndex;
-            if(QoS==1){MQTT.publishACK(MessageID);}else if(QoS==2){MQTT.publishREC(MessageID);}
-            MQTT.OnMessage(MQTT.Topic,MQTT.TopicLength,MQTT.Message,MQTT.MessageLength);MQTT.MessageFlag=true;
-          }else if(ReceivedMessageType==PUBREC){MQTT.publishREL(0,MQTT.inputString[0]*256+MQTT.inputString[1]);
-            int MessageID=MQTT.inputString[0]*256+MQTT.inputString[1];
-          }else if(ReceivedMessageType==PUBREL){MQTT.publishCOMP(MQTT.inputString[0]*256+MQTT.inputString[1]);
-            int MessageID=MQTT.inputString[0]*256+MQTT.inputString[1];
-          }else if((ReceivedMessageType==PUBACK)||(ReceivedMessageType==PUBCOMP)||(ReceivedMessageType==SUBACK)||(ReceivedMessageType==UNSUBACK)){
-            int MessageID=MQTT.inputString[0]*256+MQTT.inputString[1];
-          }else if(ReceivedMessageType==PINGREQ){
-            MQTT.TCP_Flag=false;MQTT.pingFlag=false;MQTT.sendATreply("AT+CIPSHUT\r\n",".",4000);MQTT.modemStatus=0;
-            DEBUGSerial.println("Disconnecting");DEBUGSerial.println("MQTT.TCP_Flag=False (ln261)");
+          MQTT.lengthLocal=MQTT.length;/*Serial.println(MQTT.length);*/ 
+          if(MQTT.TCP_Flag==true){
+            MQTT.printMessageType(ReceivedMessageType);MQTT.index=0L;uint32_t a=0;
+            while((MQTT.length-- > 0)&&(SIMSerial.available())){MQTT.inputString[uint32_t(MQTT.index++)]=(char)SIMSerial.read();delay(1);}
+            /*Serial.println(" ");*/  
+            if (ReceivedMessageType==CONNACK){
+              MQTT.ConnectionAcknowledgement=MQTT.inputString[0]*256+MQTT.inputString[1];
+              if(MQTT.ConnectionAcknowledgement==0){MQTT.MQTT_Flag=true;MQTT.OnConnect();}
+              MQTT.printConnectAck(MQTT.ConnectionAcknowledgement); /*MQTT.OnConnect();*/
+            }else if(ReceivedMessageType==PUBLISH){
+              uint32_t TopicLength=(MQTT.inputString[0])*256+(MQTT.inputString[1]);Monitor("Topic: '");MQTT.PublishIndex = 0;
+              for(uint32_t iter=2;iter<TopicLength+2;iter++){Monitor(String(MQTT.inputString[iter]));MQTT.Topic[MQTT.PublishIndex++]=MQTT.inputString[iter];}
+              MQTT.Topic[MQTT.PublishIndex]=0;Monitor("' Message: '");
+              MQTT.TopicLength=MQTT.PublishIndex;MQTT.PublishIndex=0;uint32_t MessageSTART=TopicLength+2UL;int MessageID=0;
+              if(QoS!=0){MessageSTART+=2;MessageID=MQTT.inputString[TopicLength+2UL]*256+MQTT.inputString[TopicLength+3UL];}
+              for(uint32_t iter=(MessageSTART);iter<(MQTT.lengthLocal);iter++){Monitor(String(MQTT.inputString[iter]));MQTT.Message[MQTT.PublishIndex++]=MQTT.inputString[iter];}
+              MQTT.Message[MQTT.PublishIndex]=0;Monitor("'");MQTT.MessageLength=MQTT.PublishIndex;
+              if(QoS==1){MQTT.publishACK(MessageID);}else if(QoS==2){MQTT.publishREC(MessageID);}
+              MQTT.OnMessage(MQTT.Topic,MQTT.TopicLength,MQTT.Message,MQTT.MessageLength);MQTT.MessageFlag=true;
+            }else if(ReceivedMessageType==PUBREC){MQTT.publishREL(0,MQTT.inputString[0]*256+MQTT.inputString[1]);
+              int MessageID=MQTT.inputString[0]*256+MQTT.inputString[1];
+            }else if(ReceivedMessageType==PUBREL){MQTT.publishCOMP(MQTT.inputString[0]*256+MQTT.inputString[1]);
+              int MessageID=MQTT.inputString[0]*256+MQTT.inputString[1];
+            }else if((ReceivedMessageType==PUBACK)||(ReceivedMessageType==PUBCOMP)||(ReceivedMessageType==SUBACK)||(ReceivedMessageType==UNSUBACK)){
+              int MessageID=MQTT.inputString[0]*256+MQTT.inputString[1];
+            }else if(ReceivedMessageType==PINGREQ){
+              MQTT.TCP_Flag=false;MQTT.pingFlag=false;MQTT.sendATreply("AT+CIPSHUT\r\n",".",4000);MQTT.modemStatus=0;
+              Monitor("Disconnecting");Monitor("MQTT.TCP_Flag=False (ln261)");
+            }
           }
-        }
-      }else if((inChar==13)||(inChar==10)){DEBUGSerial.print("inChar=13||10");}else{DEBUGSerial.print("Received: Unknown Message Type: ");DEBUGSerial.println(inChar);}
+        }else if((inChar==13)||(inChar==10)){Monitor("inChar=13||10");}else{Monitor("Received: Unknown Message Type: ");Monitor(String(inChar));}
+      }
     }
-  }
+  //}
 }
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////NEXT
 void GSM_MQTT::next(void){serialEvent();}
-void GSM_MQTT::SmsSend(unsigned long sms){
+void GSM_MQTT::SmsSend(String sms){
     String msg ="La temperatura actual es de " + String(sms) + " C.";
     String TEL="+542615131175";
     SIMSerial.write(("AT+CMGS=\""+TEL+"\"\n").c_str());
@@ -311,5 +327,5 @@ void GSM_MQTT::SmsSend(unsigned long sms){
     SIMSerial.write(msg.c_str());
     delay(500);
     SIMSerial.write(26);
-    DEBUGSerial.println("SmsSend");
+    Monitor("SmsSend");
 }
